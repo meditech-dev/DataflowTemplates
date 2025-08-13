@@ -102,6 +102,12 @@ public class DatastreamToPostgresDML extends DatastreamToDML {
     return cleanTableName(tableName);
   }
 
+    @Override
+  public String getCamelCaseTargetTableName(DatastreamRow row) {
+    String tableName = row.getTableName();
+    return tableName;
+  }
+
   @Override
   public String cleanDataTypeValueSql(
       String columnValue, String columnName, Map<String, String> tableSchema) {

@@ -15,8 +15,10 @@
  */
 package com.google.cloud.teleport.v2.utils;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.JsonNodeType;
 import com.google.cloud.teleport.v2.datastream.io.CdcJdbcIO;
 import com.google.cloud.teleport.v2.datastream.values.DatastreamRow;
 import com.google.cloud.teleport.v2.datastream.values.DmlInfo;
@@ -71,6 +73,8 @@ public abstract class DatastreamToDML
   public abstract String getTargetSchemaName(DatastreamRow row);
 
   public abstract String getTargetTableName(DatastreamRow row);
+
+  public abstract String getCamelCaseTargetTableName(DatastreamRow row);
 
   /* An exception for delete DML without a primary key */
   private class DeletedWithoutPrimaryKey extends RuntimeException {
@@ -165,8 +169,7 @@ public abstract class DatastreamToDML
 
   private synchronized void setUpPrimaryKeyCache() {
     if (primaryKeyCache == null) {
-      primaryKeyCache =
-          new JdbcPrimaryKeyCache(this.getDataSource()).withCacheResetTimeUnitValue(1440);
+      primaryKeyCache = new JdbcPrimaryKeyCache(this.getDataSource()).withCacheResetTimeUnitValue(1440);
     }
   }
 
@@ -213,7 +216,7 @@ public abstract class DatastreamToDML
       // our schema conversion rules.
       String catalogName = this.getTargetCatalogName(row);
       String schemaName = this.getTargetSchemaName(row);
-      String tableName = this.getTargetTableName(row);
+      String tableName = this.getCamelCaseTargetTableName(row);
 
       Map<String, String> tableSchema = this.getTableSchema(catalogName, schemaName, tableName);
       if (tableSchema.isEmpty()) {
@@ -224,17 +227,14 @@ public abstract class DatastreamToDML
       List<String> primaryKeys = this.getPrimaryKeys(catalogName, schemaName, tableName, rowObj);
       List<String> orderByFields = row.getSortFields(orderByIncludesIsDeleted);
       List<String> primaryKeyValues = getFieldValues(rowObj, primaryKeys, tableSchema, false);
-      List<String> orderByValues =
-          getFieldValues(rowObj, orderByFields, tableSchema, orderByIncludesIsDeleted);
+      List<String> orderByValues = getFieldValues(rowObj, orderByFields, tableSchema, orderByIncludesIsDeleted);
 
       String dmlSqlTemplate = getDmlTemplate(rowObj, primaryKeys);
-      Map<String, String> sqlTemplateValues =
-          getSqlTemplateValues(
-              rowObj, catalogName, schemaName, tableName, primaryKeys, tableSchema);
+      Map<String, String> sqlTemplateValues = getSqlTemplateValues(
+          rowObj, catalogName, schemaName, tableName, primaryKeys, tableSchema);
 
       StringSubstitutor stringSubstitutor = new StringSubstitutor(sqlTemplateValues, "{", "}");
-      String dmlSql =
-          stringSubstitutor.setDisableSubstitutionInValues(true).replace(dmlSqlTemplate);
+      String dmlSql = stringSubstitutor.setDisableSubstitutionInValues(true).replace(dmlSqlTemplate);
       return DmlInfo.of(
           failsafeValue,
           dmlSql,
@@ -302,7 +302,26 @@ public abstract class DatastreamToDML
     } else {
       columnValue = columnObj.toString();
     }
+
+    if (columnObj.getNodeType() == JsonNodeType.OBJECT && isValidJson(columnValue)) {
+      columnValue = "\'" + cleanSql(columnValue) + "\'";
+    }
     return cleanDataTypeValueSql(columnValue, columnName, tableSchema);
+  }
+
+  public boolean isValidJson(String jsonString) {
+    if (jsonString == null || jsonString.isEmpty()) {
+      return false;
+    }
+
+    // Convert jsonString to string and try parsing again
+    ObjectMapper objectMapper = new ObjectMapper();
+    try {
+      objectMapper.readTree(jsonString); // This will throw an exception if not valid
+      return true;
+    } catch (JsonProcessingException e) {
+      return false;
+    }
   }
 
   public String cleanDataTypeValueSql(
@@ -349,7 +368,7 @@ public abstract class DatastreamToDML
   public String getColumnsListSql(JsonNode rowObj, Map<String, String> tableSchema) {
     String columnsListSql = "";
 
-    for (Iterator<String> fieldNames = rowObj.fieldNames(); fieldNames.hasNext(); ) {
+    for (Iterator<String> fieldNames = rowObj.fieldNames(); fieldNames.hasNext();) {
       String columnName = fieldNames.next();
       if (!tableSchema.containsKey(columnName)) {
         continue;
@@ -370,7 +389,7 @@ public abstract class DatastreamToDML
   public String getColumnsValuesSql(JsonNode rowObj, Map<String, String> tableSchema) {
     String valuesInsertSql = "";
 
-    for (Iterator<String> fieldNames = rowObj.fieldNames(); fieldNames.hasNext(); ) {
+    for (Iterator<String> fieldNames = rowObj.fieldNames(); fieldNames.hasNext();) {
       String columnName = fieldNames.next();
       if (!tableSchema.containsKey(columnName)) {
         continue;
@@ -389,7 +408,7 @@ public abstract class DatastreamToDML
 
   public String getColumnsUpdateSql(JsonNode rowObj, Map<String, String> tableSchema) {
     String onUpdateSql = "";
-    for (Iterator<String> fieldNames = rowObj.fieldNames(); fieldNames.hasNext(); ) {
+    for (Iterator<String> fieldNames = rowObj.fieldNames(); fieldNames.hasNext();) {
       String columnName = fieldNames.next();
       if (!tableSchema.containsKey(columnName)) {
         continue;
@@ -454,12 +473,17 @@ public abstract class DatastreamToDML
   }
 
   /**
-   * The {@link JdbcTableCache} manages safely getting and setting JDBC Table objects from a local
+   * The {@link JdbcTableCache} manages safely getting and setting JDBC Table
+   * objects from a local
    * cache for each worker thread.
    *
-   * <p>The key factors addressed are ensuring expiration of cached tables, consistent update
-   * behavior to ensure reliability, and easy cache reloads. Open Question: Does the class require
-   * thread-safe behaviors? Currently, it does not since there is no iteration and get/set are not
+   * <p>
+   * The key factors addressed are ensuring expiration of cached tables,
+   * consistent update
+   * behavior to ensure reliability, and easy cache reloads. Open Question: Does
+   * the class require
+   * thread-safe behaviors? Currently, it does not since there is no iteration and
+   * get/set are not
    * continuous.
    */
   public static class JdbcTableCache extends MappedObjectCache<List<String>, Map<String, String>> {
@@ -526,20 +550,24 @@ public abstract class DatastreamToDML
       String schemaName = key.get(1);
       String tableName = key.get(2);
 
-      Map<String, String> tableSchema =
-          getTableSchema(catalogName, schemaName, tableName, MAX_RETRIES);
+      Map<String, String> tableSchema = getTableSchema(catalogName, schemaName, tableName, MAX_RETRIES);
 
       return tableSchema;
     }
   }
 
   /**
-   * The {@link JdbcPrimaryKeyCache} manages safely getting and setting JDBC Table PKs from a local
+   * The {@link JdbcPrimaryKeyCache} manages safely getting and setting JDBC Table
+   * PKs from a local
    * cache for each worker thread.
    *
-   * <p>The key factors addressed are ensuring expiration of cached tables, consistent update
-   * behavior to ensure reliability, and easy cache reloads. Open Question: Does the class require
-   * thread-safe behaviors? Currently, it does not since there is no iteration and get/set are not
+   * <p>
+   * The key factors addressed are ensuring expiration of cached tables,
+   * consistent update
+   * behavior to ensure reliability, and easy cache reloads. Open Question: Does
+   * the class require
+   * thread-safe behaviors? Currently, it does not since there is no iteration and
+   * get/set are not
    * continuous.
    */
   public static class JdbcPrimaryKeyCache extends MappedObjectCache<List<String>, List<String>> {
@@ -548,7 +576,8 @@ public abstract class DatastreamToDML
     private static final int MAX_RETRIES = 5;
 
     /**
-     * Create an instance of a {@link JdbcPrimaryKeyCache} to track table primary keys.
+     * Create an instance of a {@link JdbcPrimaryKeyCache} to track table primary
+     * keys.
      *
      * @param dataSource A DataSource instance used to extract Table objects.
      */
@@ -561,8 +590,7 @@ public abstract class DatastreamToDML
       List<String> primaryKeys = new ArrayList<String>();
       try (Connection connection = getConnection(this.dataSource, MAX_RETRIES, MAX_RETRIES)) {
         DatabaseMetaData metaData = connection.getMetaData();
-        try (ResultSet jdbcPrimaryKeys =
-            metaData.getPrimaryKeys(catalogName, schemaName, tableName)) {
+        try (ResultSet jdbcPrimaryKeys = metaData.getPrimaryKeys(catalogName, schemaName, tableName)) {
           while (jdbcPrimaryKeys.next()) {
             primaryKeys.add(jdbcPrimaryKeys.getString("COLUMN_NAME"));
           }
@@ -600,8 +628,7 @@ public abstract class DatastreamToDML
       String schemaName = key.get(1);
       String tableName = key.get(2);
 
-      List<String> primaryKeys =
-          getTablePrimaryKeys(catalogName, schemaName, tableName, MAX_RETRIES);
+      List<String> primaryKeys = getTablePrimaryKeys(catalogName, schemaName, tableName, MAX_RETRIES);
 
       return primaryKeys;
     }

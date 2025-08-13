@@ -72,4 +72,11 @@ public class DatastreamToMySQLDML extends DatastreamToDML {
     String tableName = row.getTableName();
     return cleanTableName(tableName);
   }
+  
+  @Override
+  public String getCamelCaseTargetTableName(DatastreamRow row) {
+    String tableName = row.getTableName();
+    return tableName;
+  }
 }
+
